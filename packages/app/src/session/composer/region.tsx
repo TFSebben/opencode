@@ -41,7 +41,7 @@ import { SessionTodoPill } from "./todo-pill"
 import { sessionTodos, todoFinished } from "./todos"
 import { useOpenSessionRoute } from "../session-identity-header"
 import { resolveSessionComposerSelection } from "./selection"
-import { composerProviderName } from "@/composer/selection"
+import { composerModelLabelKey, composerModelLabels, composerProviderName } from "@/composer/model-label"
 import { useProviders } from "@/providers/catalog/providers"
 import { SubagentBar } from "./subagent-bar"
 import { createSessionRequestModel } from "../requests/model"
@@ -105,13 +105,27 @@ export function createActiveSessionRegion(input: {
   )
 
   const openAttachment: NonNullable<SessionUserActions["openAttachment"]> = (file) => {
-    const url = file.source.type === "uri" ? file.source.uri : `data:${file.mime};base64,${file.data}`
+    const source = file.source
+    const fileData = "data" in file ? file.data : undefined
+    const fileUri = "uri" in file ? file.uri : undefined
+
+    const inlineUrl =
+      source?.type === "uri" ? source.uri : fileData !== undefined ? `data:${file.mime};base64,${fileData}` : undefined
 
     const download = () => {
-      const anchor = document.createElement("a")
-      anchor.href = url
-      anchor.download = getFilename(file.name) || "attachment"
-      anchor.click()
+      void (
+        inlineUrl
+          ? Promise.resolve(inlineUrl)
+          : fileUri
+            ? server.media.load(fileUri, file.mime)
+            : Promise.resolve(undefined)
+      ).then((url) => {
+        if (!url) return
+        const anchor = document.createElement("a")
+        anchor.href = url
+        anchor.download = getFilename(file.name) || "attachment"
+        anchor.click()
+      })
     }
 
     const path = file.name ?? ""
@@ -469,17 +483,30 @@ export function ActiveSessionComposerRegion(props: {
 
   const providers = useProviders(() => props.session.data.info()?.location.directory)
 
+  const modelLabels = createMemo(() =>
+    composerModelLabels(
+      providers.all(),
+      providers.connected().map((provider) => provider.id),
+    ),
+  )
+
   const subagentModel = () => {
     const ref =
       props.session.data.info()?.model ??
       props.session.history.messages().findLast((message) => message.type === "assistant")?.model
 
     if (!ref) return
-    const catalog = providers.all()
+    const label = modelLabels().get(composerModelLabelKey(ref.providerID, ref.id))
 
     return {
-      provider: composerProviderName(ref.providerID, catalog),
-      name: catalog.get(ref.providerID)?.models[ref.id]?.name.replace("(latest)", "").trim() ?? ref.id,
+      provider: label
+        ? label.provider
+        : composerProviderName(
+            ref.providerID,
+            providers.all(),
+            providers.connected().map((provider) => provider.id),
+          ),
+      name: label?.model ?? ref.id,
       variant: ref.variant,
     }
   }
